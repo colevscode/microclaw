@@ -5,11 +5,12 @@ import path from 'path';
 
 import {
   GROUPS_DIR,
+  IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
   SCHEDULER_POLL_INTERVAL,
   TIMEZONE,
 } from './config.js';
-import { runContainerAgent, writeTasksSnapshot } from './container-runner.js';
+import { ContainerOutput, runContainerAgent, writeTasksSnapshot } from './container-runner.js';
 import {
   getAllTasks,
   getDueTasks,
@@ -87,6 +88,18 @@ async function runTask(
   const sessionId =
     task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
 
+  // Idle timer: writes _close sentinel after IDLE_TIMEOUT of no output,
+  // so the container exits instead of hanging at waitForIpcMessage forever.
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const resetIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      logger.debug({ taskId: task.id }, 'Scheduled task idle timeout, closing container stdin');
+      deps.queue.closeStdin(task.chat_jid);
+    }, IDLE_TIMEOUT);
+  };
+
   try {
     const output = await runContainerAgent(
       group,
@@ -96,9 +109,23 @@ async function runTask(
         groupFolder: task.group_folder,
         chatJid: task.chat_jid,
         isMain,
+        isScheduledTask: true,
       },
       (proc, containerName) => deps.onProcess(task.chat_jid, proc, containerName),
+      async (streamedOutput: ContainerOutput) => {
+        // Reset idle timer on each streamed result
+        resetIdleTimer();
+
+        if (streamedOutput.result) {
+          result = streamedOutput.result;
+        }
+        if (streamedOutput.status === 'error') {
+          error = streamedOutput.error || 'Unknown error';
+        }
+      },
     );
+
+    if (idleTimer) clearTimeout(idleTimer);
 
     if (output.status === 'error') {
       error = output.error || 'Unknown error';
@@ -112,6 +139,7 @@ async function runTask(
       'Task completed',
     );
   } catch (err) {
+    if (idleTimer) clearTimeout(idleTimer);
     error = err instanceof Error ? err.message : String(err);
     logger.error({ taskId: task.id, error }, 'Task failed');
   }

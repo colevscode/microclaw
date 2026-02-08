@@ -903,16 +903,40 @@ async function startMessageLoop(): Promise<void> {
         }
 
         for (const [chatJid, groupMessages] of messagesByGroup) {
-          // Try to pipe messages to active container first
-          const formatted = formatMessages(groupMessages);
+          const group = registeredGroups[chatJid];
+          if (!group) continue;
+
+          const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
+          const needsTrigger = !isMainGroup && !group.alwaysRespond;
+
+          // For non-main groups, only act on trigger messages.
+          // Non-trigger messages accumulate in DB and get pulled as
+          // context when a trigger eventually arrives.
+          if (needsTrigger) {
+            const hasTrigger = groupMessages.some((m) =>
+              TRIGGER_PATTERN.test(m.content.trim()),
+            );
+            if (!hasTrigger) continue;
+          }
+
+          // Pull all messages since lastAgentTimestamp so non-trigger
+          // context that accumulated between triggers is included.
+          const allPending = getMessagesSince(
+            chatJid,
+            lastAgentTimestamp[chatJid] || '',
+            ASSISTANT_NAME,
+          );
+          const messagesToSend =
+            allPending.length > 0 ? allPending : groupMessages;
+          const formatted = formatMessages(messagesToSend);
+
           if (queue.sendMessage(chatJid, formatted)) {
             logger.debug(
-              { chatJid, count: groupMessages.length },
+              { chatJid, count: messagesToSend.length },
               'Piped messages to active container',
             );
-            // Update lastAgentTimestamp since the agent will process these
             lastAgentTimestamp[chatJid] =
-              groupMessages[groupMessages.length - 1].timestamp;
+              messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
           } else {
             // No active container — enqueue for a new one

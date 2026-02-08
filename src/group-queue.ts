@@ -131,10 +131,10 @@ export class GroupQueue {
     try {
       fs.mkdirSync(inputDir, { recursive: true });
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
-      fs.writeFileSync(
-        path.join(inputDir, filename),
-        JSON.stringify({ type: 'message', text }),
-      );
+      const filepath = path.join(inputDir, filename);
+      const tempPath = `${filepath}.tmp`;
+      fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
+      fs.renameSync(tempPath, filepath);
       return true;
     } catch {
       return false;

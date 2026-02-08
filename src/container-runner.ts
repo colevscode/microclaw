@@ -38,6 +38,7 @@ export interface ContainerInput {
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
+  isScheduledTask?: boolean;
 }
 
 export interface ContainerOutput {
@@ -335,8 +336,8 @@ export async function runContainerAgent(
       for (const line of lines) {
         if (line) logger.debug({ container: group.folder }, line);
       }
-      // Stderr activity = agent is working, reset timeout
-      resetTimeout();
+      // Don't reset timeout on stderr — SDK writes debug logs continuously.
+      // Timeout only resets on actual output (OUTPUT_MARKER in stdout).
       if (stderrTruncated) return;
       const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
       if (chunk.length > remaining) {
@@ -404,7 +405,7 @@ export async function runContainerAgent(
 
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const logFile = path.join(logsDir, `container-${timestamp}.log`);
-      const isVerbose = true; // TODO: revert after debugging
+      const isVerbose = false;
 
       const logLines = [
         `=== Container Run Log ===`,
