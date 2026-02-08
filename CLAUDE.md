@@ -41,3 +41,11 @@ Service management:
 launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
 launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist
 ```
+
+## When to Restart What
+
+| What changed | Action needed |
+|---|---|
+| Host-side code (`src/*.ts`) | `npm run build` + restart nanoclaw service (unload/load plist) |
+| Container image (`container/Dockerfile`, `container/agent-runner/`) | `./container/build.sh` (no service restart needed, next spawn uses new image) |
+| Mounted files (`groups/{name}/CLAUDE.md`, `container/skills/`, IPC files) | Nothing — changes take effect on next agent invocation via bind mounts |
