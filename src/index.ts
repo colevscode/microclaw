@@ -242,6 +242,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const prompt = formatMessages(missedMessages);
 
+  // Advance cursor immediately so the piping path in startMessageLoop
+  // won't re-fetch these messages via getMessagesSince.
+  lastAgentTimestamp[chatJid] =
+    missedMessages[missedMessages.length - 1].timestamp;
+  saveState();
+
   logger.info(
     { group: group.name, messageCount: missedMessages.length },
     'Processing messages',
@@ -283,11 +289,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (output === 'error' || hadError) {
     return false;
   }
-
-  // Agent processed messages successfully
-  lastAgentTimestamp[chatJid] =
-    missedMessages[missedMessages.length - 1].timestamp;
-  saveState();
 
   return true;
 }
