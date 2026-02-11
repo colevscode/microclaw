@@ -5,7 +5,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
+import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { createIpcMcp } from './ipc-mcp.js';
 
 interface ContainerInput {
@@ -15,6 +15,7 @@ interface ContainerInput {
   chatJid: string;
   isMain: boolean;
   isScheduledTask?: boolean;
+  secrets?: Record<string, string>;
 }
 
 interface AgentResponse {
@@ -152,6 +153,30 @@ function createPreCompactHook(): HookCallback {
   };
 }
 
+// Secrets to strip from Bash tool subprocess environments.
+// These are needed by claude-code for API auth but should never
+// be visible to commands Kit runs.
+const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
+
+function createSanitizeBashHook(): HookCallback {
+  return async (input, _toolUseId, _context) => {
+    const preInput = input as PreToolUseHookInput;
+    const command = (preInput.tool_input as { command?: string })?.command;
+    if (!command) return {};
+
+    const unsetPrefix = `unset ${SECRET_ENV_VARS.join(' ')} 2>/dev/null; `;
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        updatedInput: {
+          ...(preInput.tool_input as Record<string, unknown>),
+          command: unsetPrefix + command,
+        },
+      },
+    };
+  };
+}
+
 function sanitizeFilename(summary: string): string {
   return summary
     .toLowerCase()
@@ -242,6 +267,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Set secrets as env vars for the SDK (needed for API auth).
+  // The PreToolUse hook strips these from every Bash subprocess.
+  for (const [key, value] of Object.entries(input.secrets || {})) {
+    process.env[key] = value;
+  }
+
   const ipcMcp = createIpcMcp({
     chatJid: input.chatJid,
     groupFolder: input.groupFolder,
@@ -267,7 +298,9 @@ async function main(): Promise<void> {
   try {
     log('Starting agent...');
 
-    for await (const message of query({
+    // query() synchronously constructs the SDK client (caching the API key in memory).
+    // We delete env vars immediately after, before any async iteration or tool calls.
+    const agentStream = query({
       prompt,
       options: {
         cwd: '/workspace/group',
@@ -289,14 +322,17 @@ async function main(): Promise<void> {
           nanoclaw: ipcMcp
         },
         hooks: {
-          PreCompact: [{ hooks: [createPreCompactHook()] }]
+          PreCompact: [{ hooks: [createPreCompactHook()] }],
+          PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
         },
         outputFormat: {
           type: 'json_schema',
           schema: AGENT_RESPONSE_SCHEMA,
         }
       }
-    })) {
+    });
+
+    for await (const message of agentStream) {
       if (message.type === 'system' && message.subtype === 'init') {
         newSessionId = message.session_id;
         log(`Session initialized: ${newSessionId}`);
